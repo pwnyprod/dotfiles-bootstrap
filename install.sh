@@ -5,6 +5,7 @@ private_repo=${DOTFILES_GITHUB_REPO:-pwnyprod/ultimate-dotfiles}
 repo_dir=${DOTFILES_DIR:-"$HOME/.dotfiles"}
 bin_dir=${DOTFILES_BIN_DIR:-"$HOME/.local/bin"}
 gh_version=${GH_VERSION:-2.100.0}
+cosign_version=${COSIGN_VERSION:-3.1.3}
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 
@@ -39,6 +40,28 @@ install_gh() {
 	[ -n "$GH_BIN" ] || { printf 'gh-Binary nicht im Archiv gefunden.\n' >&2; exit 1; }
 }
 
+install_cosign() {
+	case "$(uname -s)/$(uname -m)" in
+		Darwin/arm64)
+			cosign_asset=cosign-darwin-arm64
+			cosign_sha256=5cf948c2f4dfe59687bdd0b8523709067383e03982cc543475c8a7dc70e92a76
+			;;
+		Linux/x86_64)
+			cosign_asset=cosign-linux-amd64
+			cosign_sha256=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+			;;
+		Linux/aarch64|Linux/arm64)
+			cosign_asset=cosign-linux-arm64
+			cosign_sha256=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a
+			;;
+	esac
+	curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${cosign_version}/${cosign_asset}" -o "$scratch/cosign"
+	actual=$(checksum "$scratch/cosign" | awk '{print $1}')
+	[ "$cosign_sha256" = "$actual" ] || { printf 'Checksum-Prüfung für cosign fehlgeschlagen.\n' >&2; exit 1; }
+	chmod 0755 "$scratch/cosign"
+	COSIGN_BIN="$scratch/cosign"
+}
+
 if command -v gh >/dev/null 2>&1; then
 	GH_BIN=$(command -v gh)
 else
@@ -67,11 +90,15 @@ case "$(uname -s)/$(uname -m)" in
 	*) printf 'Keine dotctl-Release für diese Plattform.\n' >&2; exit 1 ;;
 esac
 
-"$GH_BIN" release download "dotctl-v${dotctl_version}" --repo "$private_repo" --dir "$scratch" --pattern "$asset" --pattern checksums.txt
+"$GH_BIN" release download "dotctl-v${dotctl_version}" --repo "$private_repo" --dir "$scratch" --pattern "$asset" --pattern "$asset.sigstore.json" --pattern checksums.txt
 expected=$(awk -v file="$asset" '$2 == file { print $1 }' "$scratch/checksums.txt")
 actual=$(checksum "$scratch/$asset" | awk '{print $1}')
 [ -n "$expected" ] && [ "$expected" = "$actual" ] || { printf 'Checksum-Prüfung für dotctl fehlgeschlagen.\n' >&2; exit 1; }
-"$GH_BIN" attestation verify "$scratch/$asset" --repo "$private_repo" >/dev/null
+install_cosign
+"$COSIGN_BIN" verify-blob "$scratch/$asset" \
+	--bundle "$scratch/$asset.sigstore.json" \
+	--certificate-identity "https://github.com/${private_repo}/.github/workflows/dotctl-release.yml@refs/tags/dotctl-v${dotctl_version}" \
+	--certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
 mkdir -p "$bin_dir"
 install -m 0755 "$scratch/$asset" "$bin_dir/dotctl"
 
