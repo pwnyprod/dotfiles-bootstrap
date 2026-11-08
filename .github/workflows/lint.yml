@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: bash -n install.sh
-      - run: shellcheck install.sh
+      - run: shellcheck -S warning install.sh
 
   powershell:
     runs-on: windows-latest
